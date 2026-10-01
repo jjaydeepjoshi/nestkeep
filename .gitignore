@@ -14,3 +14,4 @@ app/release/
 *.log
 play-publisher-key.json
 play-upload/
+.wrangler/
