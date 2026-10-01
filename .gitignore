@@ -12,3 +12,4 @@ app/google-services.json
 app/release/
 .firebase/
 *.log
+play-publisher-key.json

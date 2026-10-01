@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.gms.google-services")
+    id("com.github.triplet.play")
 }
 
 // Release signing comes from keystore.properties (local) or environment variables (CI). Never commit either.
@@ -54,6 +55,13 @@ android {
         abortOnError = true
         warningsAsErrors = false
     }
+}
+
+// CI writes play-publisher-key.json from a secret; absent locally, which only matters for the publish tasks.
+play {
+    val credentials = rootProject.file("play-publisher-key.json")
+    if (credentials.exists()) serviceAccountCredentials.set(credentials)
+    defaultToAppBundles.set(true)
 }
 
 dependencies {

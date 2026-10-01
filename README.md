@@ -26,13 +26,13 @@ It is git-ignored. Release signing reads `keystore.properties` or the env vars `
 | File | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | PRs and non-main pushes | unit tests, lint, debug build |
-| `release.yml` | push to `main`, or manual | tests, lint, signed AAB, deploys Firestore rules, uploads to Play closed testing (`alpha`) |
+| `play-console.yml` | manual (Run workflow) | tests + lint, signed AAB to Internal, promote to closed testing (`alpha`), optionally production; also deploys Firestore rules when `FIREBASE_SERVICE_ACCOUNT` is set |
 
 ### Required GitHub secrets
 `GOOGLE_SERVICES_JSON` (base64), `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`,
-`PLAY_SERVICE_ACCOUNT_JSON` (Play Console API service account), optional `FIREBASE_SERVICE_ACCOUNT`.
-Repository variable `PLAY_RELEASE_STATUS` = `draft` (default) or `completed`. Use `draft` until the Play listing is
-complete; Play rejects the very first upload through the API, so upload the first AAB by hand.
+`PLAY_PUBLISHER_SERVICE_ACCOUNT_JSON` (Play Console API service account; the same one used by spikkle-e works), optional `FIREBASE_SERVICE_ACCOUNT`.
+Choose `draft` as release status until the Play listing is complete; Play rejects the first upload through the API,
+so upload the first AAB by hand.
 
 ## One-time setup checklist
 1. Firebase console -> Authentication -> enable the **Google** provider (support email), then re-download
