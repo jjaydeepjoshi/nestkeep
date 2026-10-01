@@ -41,4 +41,4 @@ so upload the first AAB by hand.
 3. Google Auth platform: finish the consent screen, add scope `.../auth/drive.appdata`, add testers.
 4. After the first Play upload, add the **Play App Signing SHA-1** (Play Console -> App integrity) to the Firebase
    Android app, otherwise Google sign-in fails on Play-installed builds.
-5. Host `docs/privacy.html` (GitHub Pages) and enter its URL in the Play listing.
+5. Privacy policy is hosted on Cloudflare Pages: https://nestkeep-privacy.pages.dev/ (deploy with `npx wrangler pages deploy docs --project-name nestkeep-privacy`).

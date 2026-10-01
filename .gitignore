@@ -13,3 +13,4 @@ app/release/
 .firebase/
 *.log
 play-publisher-key.json
+play-upload/
