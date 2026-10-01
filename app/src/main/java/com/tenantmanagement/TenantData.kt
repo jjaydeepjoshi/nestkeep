@@ -58,6 +58,9 @@ data class RentBill(
     val electricity: Long get() = units * rate
     val total: Long get() = rent + electricity
     val due: Long get() = (total - paid).coerceAtLeast(0)
+
+    /** Money paid beyond this bill: advance credit the owner holds for the tenant. */
+    val extra: Long get() = (paid - total).coerceAtLeast(0)
 }
 
 data class RentalData(

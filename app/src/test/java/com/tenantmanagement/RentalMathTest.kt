@@ -68,4 +68,43 @@ class RentalMathTest {
     fun aadhaarMustBeTwelveDigits() {
         aadhaarFingerprint("1234", ByteArray(32))
     }
+
+    @Test
+    fun overpaymentShowsAsExtraNotNegativeDue() {
+        val bill = RentBill("b", "t1", "2025-03", 0, 1000, payments = listOf(Payment("p", "2025-03-02", 1500)))
+        assertEquals(0, bill.due)
+        assertEquals(500, bill.extra)
+    }
+
+    @Test
+    fun reportTotalsIncludeExtraPaid() {
+        val data = RentalData(
+            tenants = listOf(tenant()),
+            bills = listOf(RentBill("x", "t1", "2025-02", 0, 5000, 12, listOf(Payment("p", "2025-02-03", 6000))))
+        )
+        val totals = reportTotals(data, null, null, false, 2025, YearMonth.of(2025, 2))
+        assertEquals(1000, totals.extra)
+        assertEquals(0, totals.due)
+    }
+
+    @Test
+    fun carryForwardMovesAdvanceCreditToTheNextBill() {
+        val old = RentBill("old", "t1", "2025-02", 0, 5000, payments = listOf(Payment("p", "2025-02-03", 6000)))
+        val next = RentBill("new", "t1", "2025-03", 0, 5000)
+        val (oldBills, newBill) = applyCarryForward(listOf(old), next, "2025-03-01")
+        assertEquals(0, oldBills.single().extra)
+        assertEquals(5000, oldBills.single().paid)
+        assertEquals(1000, newBill.paid)
+        assertEquals(4000, newBill.due)
+    }
+
+    @Test
+    fun carryForwardNeverOverCreditsASmallBill() {
+        val old = RentBill("old", "t1", "2025-02", 0, 1000, payments = listOf(Payment("p", "2025-02-03", 9000)))
+        val next = RentBill("new", "t1", "2025-03", 0, 1000)
+        val (oldBills, newBill) = applyCarryForward(listOf(old), next, "2025-03-01")
+        assertEquals(0, newBill.due)
+        assertEquals(0, newBill.extra)
+        assertEquals(7000, oldBills.single().extra)
+    }
 }

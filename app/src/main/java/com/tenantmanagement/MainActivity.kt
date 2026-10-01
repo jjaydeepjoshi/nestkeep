@@ -184,6 +184,8 @@ private fun SignInScreen(auth: AuthManager) {
                 scope.launch {
                     try {
                         auth.signIn()
+                        // Ask for Drive access as part of signing in so it never interrupts later.
+                        runCatching { auth.driveToken(false) }
                     } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
                         message = "Sign-in was cancelled."
                     } catch (e: Exception) {
@@ -549,7 +551,8 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
             onDismiss = { showBillDialog = false },
             onCreate = { tenant, month, units, rate ->
                 val bill = RentBill(UUID.randomUUID().toString(), tenant.id, month, units, tenant.rent, rate)
-                update(data.copy(bills = data.bills + bill))
+                val (olderBills, billWithCredit) = applyCarryForward(data.bills, bill, today())
+                update(data.copy(bills = olderBills + billWithCredit))
                 showBillDialog = false
             }
         )
@@ -852,7 +855,7 @@ private fun BillCard(bill: RentBill, tenant: Tenant?, onPay: (RentBill) -> Unit)
                     color = if (bill.due == 0L) Mint else SoftAmber,
                     shape = RoundedCornerShape(30.dp)
                 ) {
-                    Text(if (bill.due == 0L) "PAID" else if (bill.paid > 0) "PART PAID" else "DUE", modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp), color = if (bill.due == 0L) Green else Amber, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    Text(if (bill.extra > 0) "EXTRA PAID" else if (bill.due == 0L) "PAID" else if (bill.paid > 0) "PART PAID" else "DUE", modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp), color = if (bill.due == 0L) Green else Amber, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                 }
             }
             HorizontalDivider(color = Color(0xFFEAF0EC))
@@ -866,10 +869,13 @@ private fun BillCard(bill: RentBill, tenant: Tenant?, onPay: (RentBill) -> Unit)
                 Text("Paid ${money(bill.paid)}", color = Green, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                 Text("Due ${money(bill.due)}", color = if (bill.due == 0L) Green else Amber, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
             }
-            if (bill.due > 0) {
+            if (bill.extra > 0) {
+                Text("Extra paid ${money(bill.extra)} (advance credit, applied to the next bill)", color = Green, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+            }
+            run {
                 Button(onClick = { onPay(bill) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                     Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Text("Record payment", modifier = Modifier.padding(start = 7.dp))
+                    Text(if (bill.due > 0) "Record payment" else "Add extra payment", modifier = Modifier.padding(start = 7.dp))
                 }
             }
         }
@@ -1046,6 +1052,7 @@ private fun ReportsPage(data: RentalData) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ReportMetric("PAID", money(allTotals.paid), Modifier.weight(1f), true)
                     ReportMetric("OUTSTANDING", money(allTotals.due), Modifier.weight(1f), true)
+                    if (allTotals.extra > 0) ReportMetric("EXTRA PAID", money(allTotals.extra), Modifier.weight(1f), true)
                 }
                 HorizontalDivider(color = Color(0x665CA18B))
                 Text(
@@ -1359,6 +1366,7 @@ private fun buildBuildingTenantReportPdfLines(
         "Total billed: ${money(totals.totalBilled)}",
         "Paid: ${money(totals.paid)}",
         "Outstanding: ${money(totals.due)}",
+        "Extra paid (advance credit): ${money(totals.extra)}",
         ""
     )
     if (reports.isEmpty()) {
@@ -1378,6 +1386,7 @@ private fun buildBuildingTenantReportPdfLines(
         lines += "Total billed: ${money(report.totals.totalBilled)}"
         lines += "Paid: ${money(report.totals.paid)}"
         lines += "Outstanding: ${money(report.totals.due)}"
+        lines += "Extra paid (advance credit): ${money(report.totals.extra)}"
         lines += ""
     }
     lines += "Payment totals are attributed to the bill month; individual payment dates are not recorded."
@@ -1402,6 +1411,7 @@ private fun buildReportPdfLines(
     lines += "Total billed: ${money(allTotals.totalBilled)}"
     lines += "Paid: ${money(allTotals.paid)}"
     lines += "Outstanding: ${money(allTotals.due)}"
+    lines += "Extra paid (advance credit): ${money(allTotals.extra)}"
     lines += "${if (yearly) "Occupied tenant-months" else "Tenants in period"}: ${allTotals.tenantMonths}"
     lines += ""
 
@@ -1470,6 +1480,7 @@ private fun buildTenantReportPdfLines(
         lines += "Total billed: ${money(report.totals.totalBilled)}"
         lines += "Paid: ${money(report.totals.paid)}"
         lines += "Outstanding: ${money(report.totals.due)}"
+        lines += "Extra paid (advance credit): ${money(report.totals.extra)}"
         lines += "${if (yearly) "Occupied tenant-months" else "Tenants in period"}: ${report.totals.tenantMonths}"
         lines += "Occupancy history:"
         report.tenants.forEach { tenant ->
@@ -1580,6 +1591,7 @@ private fun ReportTotalLines(totals: RentalTotals, yearly: Boolean) {
         ReportLine("Rent billed", money(totals.rentBilled))
         ReportLine("Electricity billed", money(totals.electricityBilled))
         ReportLine("Paid / outstanding", "${money(totals.paid)} / ${money(totals.due)}", emphasize = true)
+        if (totals.extra > 0) ReportLine("Extra paid (advance credit)", money(totals.extra))
         Text(
             "${if (yearly) "Occupied tenant-months" else "Tenants in period"}: ${totals.tenantMonths}",
             color = Muted,
@@ -2054,7 +2066,10 @@ private fun PaymentDialog(bill: RentBill, tenant: Tenant?, onDismiss: () -> Unit
                 OutlinedTextField(amountText, { amountText = it.filter(Char::isDigit).take(9) }, label = { Text("Payment received (₹)") }, singleLine = true)
                 OutlinedTextField(date, { date = it.take(10) }, label = { Text("Date received (YYYY-MM-DD)") }, singleLine = true)
                 OutlinedTextField(note, { note = it.take(80) }, label = { Text("Note (cash, UPI…) optional") }, singleLine = true)
-                Text("Enter a smaller amount to record a partial payment.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                Text("Enter a smaller amount for a partial payment, or a larger one if the tenant paid extra.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                if (amount != null && amount > bill.due) {
+                    Text("${money(amount - bill.due)} extra will be saved as advance credit and applied to the next bill.", color = Green, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                }
                 if (bill.payments.isNotEmpty()) {
                     Text("Earlier payments", color = Muted, style = MaterialTheme.typography.labelMedium)
                     bill.payments.forEach { Text("${it.date} · ${money(it.amount)} ${it.note}", style = MaterialTheme.typography.bodySmall) }
@@ -2064,7 +2079,7 @@ private fun PaymentDialog(bill: RentBill, tenant: Tenant?, onDismiss: () -> Unit
         confirmButton = {
             TextButton(
                 onClick = { if (amount != null) onPay(amount, date, note.trim()) },
-                enabled = amount != null && amount > 0 && amount <= bill.due && isValidStartDate(date)
+                enabled = amount != null && amount > 0 && isValidStartDate(date)
             ) { Text("Save payment") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }

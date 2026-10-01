@@ -8,7 +8,8 @@ internal data class RentalTotals(
     val electricityBilled: Long = 0,
     val paid: Long = 0,
     val due: Long = 0,
-    val tenantMonths: Int = 0
+    val tenantMonths: Int = 0,
+    val extra: Long = 0
 ) {
     val totalBilled: Long get() = rentBilled + electricityBilled
 
@@ -18,7 +19,8 @@ internal data class RentalTotals(
         electricityBilled + other.electricityBilled,
         paid + other.paid,
         due + other.due,
-        tenantMonths + other.tenantMonths
+        tenantMonths + other.tenantMonths,
+        extra + other.extra
     )
 }
 
@@ -59,6 +61,7 @@ internal fun reportTotals(
         electricityBilled = relevantBills.sumOf { it.electricity },
         paid = relevantBills.sumOf { it.paid },
         due = relevantBills.sumOf { it.due },
+        extra = relevantBills.sumOf { it.extra },
         tenantMonths = tenantMonths
     )
 }
@@ -90,6 +93,7 @@ internal fun reportTotalsForTenants(
         electricityBilled = bills.sumOf { it.electricity },
         paid = bills.sumOf { it.paid },
         due = bills.sumOf { it.due },
+        extra = bills.sumOf { it.extra },
         tenantMonths = tenantMonths
     )
 }
@@ -104,4 +108,25 @@ internal fun tenantOccupiesMonth(tenant: Tenant, month: YearMonth): Boolean {
     val monthStart = month.atDay(1)
     val monthEnd = month.atEndOfMonth()
     return !start.isAfter(monthEnd) && (end == null || !end.isBefore(monthStart))
+}
+
+/**
+ * Moves a tenant's advance credit from older bills onto [newBill] (oldest first) so extra money paid earlier is not lost.
+ * Returns the updated list of existing bills and the new bill with the credit applied as payments.
+ */
+internal fun applyCarryForward(existing: List<RentBill>, newBill: RentBill, date: String): Pair<List<RentBill>, RentBill> {
+    var need = newBill.total
+    var result = newBill
+    val updated = existing.map { it }.toMutableList()
+    existing.withIndex()
+        .filter { it.value.tenantId == newBill.tenantId && it.value.extra > 0 }
+        .sortedBy { it.value.month }
+        .forEach { (index, old) ->
+            if (need <= 0) return@forEach
+            val take = minOf(old.extra, need)
+            updated[index] = old.copy(payments = old.payments + Payment(java.util.UUID.randomUUID().toString(), date, -take, "Credit moved to ${newBill.month}"))
+            result = result.copy(payments = result.payments + Payment(java.util.UUID.randomUUID().toString(), date, take, "Credit from ${old.month}"))
+            need -= take
+        }
+    return updated to result
 }
