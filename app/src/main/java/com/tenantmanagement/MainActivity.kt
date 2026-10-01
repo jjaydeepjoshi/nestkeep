@@ -160,8 +160,11 @@ private fun SignInScreen(auth: AuthManager) {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var failed by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     Column(
-        Modifier.fillMaxSize().padding(32.dp),
+        Modifier.fillMaxSize().padding(32.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -177,6 +180,7 @@ private fun SignInScreen(auth: AuthManager) {
             onClick = {
                 busy = true
                 message = null
+                failed = false
                 scope.launch {
                     try {
                         auth.signIn()
@@ -184,6 +188,7 @@ private fun SignInScreen(auth: AuthManager) {
                         message = "Sign-in was cancelled."
                     } catch (e: Exception) {
                         message = e.localizedMessage ?: "Sign-in failed. Check your connection and try again."
+                        failed = true
                     } finally {
                         busy = false
                     }
@@ -194,6 +199,23 @@ private fun SignInScreen(auth: AuthManager) {
             shape = RoundedCornerShape(14.dp)
         ) { Text(if (busy) "Signing in…" else "Sign in with Google", fontWeight = FontWeight.SemiBold) }
         message?.let { Text(it, color = Red, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 12.dp)) }
+        if (failed) {
+            val fingerprints = remember { signingFingerprints(context) }
+            if (fingerprints != null) {
+                val details = "App signing SHA-1:\n${fingerprints.sha1}\n\nApp signing SHA-256:\n${fingerprints.sha256}"
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    Text(details, color = Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 14.dp))
+                }
+                TextButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(details))
+                    Toast.makeText(context, "Fingerprints copied", Toast.LENGTH_SHORT).show()
+                }) { Text("Copy fingerprints", color = Green) }
+                Text(
+                    "Add the SHA-1 in Firebase console > Project settings > NestKeep Android app > Add fingerprint, then try again.",
+                    color = Muted, style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
     }
 }
 
