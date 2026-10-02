@@ -7,8 +7,8 @@ documents, monthly rent + electricity bills, partial/full payments with dates, f
 - **Sign in with Google** (Credential Manager -> Firebase Auth).
 - **Records** (buildings, tenants, bills, payments) sync through Cloud Firestore under `users/{uid}`; rules in
   `firebase/firestore.rules` allow each user only their own data. Works offline and syncs later.
-- **Photos and ID documents** are stored in the owner's own Google Drive *app data* folder (`drive.appdata` scope:
-  private to the app, free, not visible in the Drive UI).
+- **Photos and ID documents** are stored in Firestore under `users/{uid}/files` (images downscaled to 1600px JPEG,
+  files chunked below the 1 MiB document limit, 6 MB max each). No Drive scope, so Google sign-in is the only prompt.
 - Aadhaar numbers are never stored. Only the last four digits and a keyed hash (for duplicate detection) are kept.
 - Data from an older on-device install can be uploaded on first login.
 
@@ -37,8 +37,8 @@ so upload the first AAB by hand.
 ## One-time setup checklist
 1. Firebase console -> Authentication -> enable the **Google** provider (support email), then re-download
    `google-services.json` (it then contains the web client ID) and update the `GOOGLE_SERVICES_JSON` secret.
-2. Enable the **Google Drive API** for the project in Google Cloud.
-3. Google Auth platform: finish the consent screen, add scope `.../auth/drive.appdata`, add testers.
-4. After the first Play upload, add the **Play App Signing SHA-1** (Play Console -> App integrity) to the Firebase
+2. Google Auth platform: set the app name, support email and privacy policy URL on the consent screen (only basic
+   sign-in scopes are needed), add testers while in testing.
+3. After the first Play upload, add the **Play App Signing SHA-1** (Play Console -> App integrity) to the Firebase
    Android app, otherwise Google sign-in fails on Play-installed builds.
-5. Privacy policy is hosted on Cloudflare Pages: https://nestkeep-privacy.pages.dev/ (deploy with `npx wrangler pages deploy docs --project-name nestkeep-privacy`).
+4. Privacy policy is hosted on Cloudflare Pages: https://nestkeep-privacy.pages.dev/ (deploy with `npx wrangler pages deploy docs --project-name nestkeep-privacy`).

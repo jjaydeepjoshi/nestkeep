@@ -114,7 +114,7 @@ private data class FamilyDraft(
     val relationship: String = ""
 )
 
-private val LocalDrive = androidx.compose.runtime.staticCompositionLocalOf<DriveStorage?> { null }
+private val LocalFiles = androidx.compose.runtime.staticCompositionLocalOf<CloudFiles?> { null }
 
 class MainActivity : ComponentActivity() {
     private lateinit var auth: AuthManager
@@ -122,9 +122,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         auth = AuthManager(this)
-        auth.consentLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) {
-            auth.onConsentResult(it.data)
-        }
         setContent {
             MaterialTheme(
                 colorScheme = androidx.compose.material3.lightColorScheme(
@@ -184,8 +181,6 @@ private fun SignInScreen(auth: AuthManager) {
                 scope.launch {
                     try {
                         auth.signIn()
-                        // Ask for Drive access as part of signing in so it never interrupts later.
-                        runCatching { auth.driveToken(false) }
                     } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
                         message = "Sign-in was cancelled."
                     } catch (e: Exception) {
@@ -226,7 +221,7 @@ private fun SignedIn(auth: AuthManager, uid: String, email: String) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val repo = remember(uid) { CloudRepository(uid) }
-    val drive = remember(uid) { DriveStorage(context.applicationContext) { refresh -> auth.driveToken(refresh) } }
+    val files = remember(uid) { CloudFiles(context.applicationContext, uid) }
     var startError by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableStateOf(0) }
     LaunchedEffect(repo, attempt) {
@@ -252,7 +247,7 @@ private fun SignedIn(auth: AuthManager, uid: String, email: String) {
             }
         }
     } else {
-        androidx.compose.runtime.CompositionLocalProvider(LocalDrive provides drive) {
+        androidx.compose.runtime.CompositionLocalProvider(LocalFiles provides files) {
             RentalApp(repo, loaded, email, syncError) { scope.launch { auth.signOut() } }
         }
     }
@@ -269,7 +264,7 @@ private enum class Page(val title: String, val icon: ImageVector) {
 
 @Composable
 private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, syncError: String?, onSignOut: () -> Unit) {
-    val drive = LocalDrive.current
+    val files = LocalFiles.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val appContext = LocalContext.current.applicationContext
     val legacyStore = remember { LegacyStore(appContext) }
@@ -481,14 +476,14 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
                     Toast.makeText(context, "This Aadhaar is already registered.", Toast.LENGTH_LONG).show()
                 } else if (data.tenants.any { it.active && it.buildingId == buildingId && it.flat == flat }) {
                     Toast.makeText(context, "That flat was just occupied. Please pick another.", Toast.LENGTH_LONG).show()
-                } else if (drive == null) {
+                } else if (files == null) {
                     Toast.makeText(context, "Cloud storage is not ready. Please try again.", Toast.LENGTH_LONG).show()
                 } else if (!saving) {
                     saving = true
                     scope.launch {
                         val uploaded = mutableListOf<String>()
                         suspend fun upload(local: String, fileName: String, mime: String): String =
-                            drive.upload(Uri.parse(local), fileName, mime).also { uploaded += it }
+                            files.upload(Uri.parse(local), fileName, mime).also { uploaded += it }
                         suspend fun uploadDocs(list: List<DocumentFile>) = list.map {
                             val mime = context.contentResolver.getType(Uri.parse(it.uri)) ?: "application/octet-stream"
                             DocumentFile(upload(it.uri, it.name, mime), it.name)
@@ -526,7 +521,7 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
                             registrationPhotos = emptyMap()
                             showTenantDialog = false
                         } catch (error: Exception) {
-                            uploaded.forEach { runCatching { drive.delete(it) } }
+                            uploaded.forEach { runCatching { files.delete(it) } }
                             Toast.makeText(context, "Could not upload documents: ${error.localizedMessage ?: "check your connection"}. Nothing was saved.", Toast.LENGTH_LONG).show()
                         } finally {
                             saving = false
@@ -541,7 +536,7 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
             onDismissRequest = {},
             confirmButton = {},
             title = { Text("Saving tenant") },
-            text = { Text("Uploading photos and documents to your Google Drive…") }
+            text = { Text("Uploading photos and documents to your cloud space…") }
         )
     }
     if (showBillDialog) {
@@ -599,13 +594,13 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
             title = { Text("Move data from this phone?") },
             text = { Text("Records saved on this device by an earlier version can be uploaded to your Google account so they sync everywhere.") },
             confirmButton = {
-                TextButton(enabled = !importing && drive != null, onClick = {
+                TextButton(enabled = !importing && files != null, onClick = {
                     importing = true
                     scope.launch {
                         try {
                             val legacy = legacyStore.load()
                             suspend fun move(uri: String, name: String, mime: String): String =
-                                if (isDriveUri(uri)) uri else runCatching { drive!!.upload(Uri.parse(uri), name, mime) }.getOrDefault(uri)
+                                if (isCloudFile(uri)) uri else runCatching { files!!.upload(Uri.parse(uri), name, mime) }.getOrDefault(uri)
                             suspend fun moveDocs(list: List<DocumentFile>) = list.map {
                                 val mime = runCatching { context.contentResolver.getType(Uri.parse(it.uri)) }.getOrNull() ?: "application/octet-stream"
                                 DocumentFile(move(it.uri, it.name, mime), it.name)
@@ -639,7 +634,7 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
         AlertDialog(
             onDismissRequest = { showAccount = false },
             title = { Text("Account") },
-            text = { Text("Signed in as $email.\n\nYour records sync to your private cloud space; photos and documents are kept in your own Google Drive app folder.") },
+            text = { Text("Signed in as $email.\n\nYour records sync to your private cloud space; photos and documents are kept in your private cloud space.") },
             confirmButton = { TextButton(onClick = { showAccount = false; onSignOut() }) { Text("Sign out", color = Red) } },
             dismissButton = { TextButton(onClick = { showAccount = false }) { Text("Close") } }
         )
@@ -1960,7 +1955,7 @@ private fun DocumentPickerSection(
 private fun TenantDocumentLinks(files: List<DocumentFile>) {
     if (files.isEmpty()) return
     val context = LocalContext.current
-    val drive = LocalDrive.current
+    val files = LocalFiles.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text("Attached documents", color = Muted, style = MaterialTheme.typography.labelSmall)
@@ -1969,8 +1964,8 @@ private fun TenantDocumentLinks(files: List<DocumentFile>) {
                 onClick = {
                     scope.launch {
                         try {
-                            val (uri, mime) = if (isDriveUri(file.uri)) {
-                                val local = drive?.download(file.uri) ?: error("Cloud storage is not ready.")
+                            val (uri, mime) = if (isCloudFile(file.uri)) {
+                                val local = files?.download(file.uri) ?: error("Cloud storage is not ready.")
                                 FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", local) to
                                     (java.net.URLConnection.guessContentTypeFromName(file.name) ?: "*/*")
                             } else {
