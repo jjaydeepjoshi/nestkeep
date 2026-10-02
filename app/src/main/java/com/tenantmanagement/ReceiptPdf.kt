@@ -28,6 +28,7 @@ data class ReceiptData(
     val total: Long,
     val paid: Long,
     val due: Long,
+    val extra: Long,
     val payments: List<Payment>
 )
 
@@ -44,9 +45,16 @@ internal fun buildReceipt(bill: RentBill, tenant: Tenant, building: Building, is
         flat = tenant.flat.trim(),
         periodLabel = period,
         rent = bill.rent, units = bill.units, rate = bill.rate, electricity = bill.electricity,
-        total = bill.total, paid = bill.paid, due = bill.due,
+        total = bill.total, paid = bill.paid, due = bill.due, extra = bill.extra,
         payments = bill.payments.sortedBy { it.date }
     )
+}
+
+/** PAID, PART PAID or UNPAID, as shown on the receipt. */
+internal val ReceiptData.status: String get() = when {
+    paid <= 0 -> "UNPAID"
+    due > 0 -> "PART PAID"
+    else -> "PAID"
 }
 
 private val ones = arrayOf(
@@ -106,7 +114,7 @@ internal fun writeReceiptPdf(receipt: ReceiptData, output: OutputStream) {
     canvas.drawRect(margin - 16, 32f, right + 16, height - 32f, Paint().apply {
         style = Paint.Style.STROKE; color = green; strokeWidth = 2f
     })
-    canvas.drawText("RENT RECEIPT", width / 2f, 90f, paint(26f, true, green, Paint.Align.CENTER))
+    canvas.drawText(if (receipt.paid > 0) "RENT RECEIPT" else "RENT BILL", width / 2f, 90f, paint(26f, true, green, Paint.Align.CENTER))
     canvas.drawText(receipt.buildingName, width / 2f, 114f, paint(13f, true, align = Paint.Align.CENTER))
     var y = 130f
     wrap(receipt.buildingAddress, paint(10.5f, color = grey), width - 2 * margin).forEach {
@@ -120,13 +128,23 @@ internal fun writeReceiptPdf(receipt: ReceiptData, output: OutputStream) {
     // Receipt number / date
     canvas.drawText("Receipt No: ${receipt.receiptNo}", margin, y, paint(11f, true))
     canvas.drawText("Date: ${receipt.issuedOn}", right, y, paint(11f, true, align = Paint.Align.RIGHT))
-    y += 34f
+    y += 22f
+    val statusColor = when (receipt.status) { "PAID" -> green; "PART PAID" -> Color.rgb(170, 80, 20); else -> Color.rgb(170, 40, 40) }
+    canvas.drawText("Status: ${receipt.status}", margin, y, paint(12f, true, statusColor))
+    y += 24f
 
     // Statement
     val flatPart = if (receipt.flat.isNotEmpty()) "Flat ${receipt.flat}, " else ""
-    val statement = "Received with thanks from ${receipt.tenantName} a sum of ${rupees(receipt.paid)} " +
-        "(${amountInWords(receipt.paid)}) towards the rent and electricity charges for the month of " +
-        "${receipt.periodLabel} for ${flatPart}${receipt.buildingName}."
+    val place = "${flatPart}${receipt.buildingName}"
+    val statement = if (receipt.paid > 0) {
+        "Received with thanks from ${receipt.tenantName} a sum of ${rupees(receipt.paid)} " +
+            "(${amountInWords(receipt.paid)}) towards the rent and electricity charges for the month of " +
+            "${receipt.periodLabel} for $place." +
+            if (receipt.due > 0) " A balance of ${rupees(receipt.due)} remains unpaid." else ""
+    } else {
+        "Rent and electricity charges of ${rupees(receipt.total)} for the month of ${receipt.periodLabel} for $place " +
+            "are payable by ${receipt.tenantName}. No payment has been received so far."
+    }
     wrap(statement, paint(12.5f), width - 2 * margin).forEach {
         canvas.drawText(it, margin, y, paint(12.5f)); y += 19f
     }
@@ -146,9 +164,10 @@ internal fun writeReceiptPdf(receipt: ReceiptData, output: OutputStream) {
     row("Monthly rent", rupees(receipt.rent))
     row("Electricity (${receipt.units} units x Rs. ${receipt.rate})", rupees(receipt.electricity))
     canvas.drawLine(margin, y - 14f, right, y - 14f, line)
-    row("Total for the month", rupees(receipt.total), bold = true)
-    row("Amount received", rupees(receipt.paid), bold = true, color = green)
-    row("Balance due", rupees(receipt.due), bold = receipt.due > 0, color = if (receipt.due > 0) Color.rgb(170, 80, 20) else grey)
+    row("Total billed for the month", rupees(receipt.total), bold = true)
+    row("Paid", rupees(receipt.paid), bold = true, color = green)
+    row("Unpaid / remaining", rupees(receipt.due), bold = true, color = if (receipt.due > 0) Color.rgb(170, 80, 20) else grey)
+    if (receipt.extra > 0) row("Extra paid (advance credit)", rupees(receipt.extra), color = green)
     canvas.drawRect(margin, top, right, y - 14f, Paint().apply { style = Paint.Style.STROKE; color = line.color; strokeWidth = 1f })
     y += 6f
 
@@ -170,12 +189,12 @@ internal fun writeReceiptPdf(receipt: ReceiptData, output: OutputStream) {
 
     // Signature block, anchored to the bottom so there is room to sign above the line
     val sigLineY = height - 130f
-    canvas.drawText("Received by (Owner / Landlord)", right, sigLineY - 70f, paint(10f, color = grey, align = Paint.Align.RIGHT))
+    canvas.drawText(if (receipt.paid > 0) "Received by (Owner / Landlord)" else "Issued by (Owner / Landlord)", right, sigLineY - 70f, paint(10f, color = grey, align = Paint.Align.RIGHT))
     canvas.drawLine(right - 190f, sigLineY, right, sigLineY, Paint().apply { color = Color.BLACK; strokeWidth = 1f })
     canvas.drawText(receipt.ownerName, right, sigLineY + 18f, paint(12.5f, true, align = Paint.Align.RIGHT))
     canvas.drawText("Signature of owner", right, sigLineY + 33f, paint(9.5f, color = grey, align = Paint.Align.RIGHT))
     canvas.drawText(
-        "This receipt is generated by NestKeep and is valid when signed by the owner.",
+        "Generated by NestKeep. Valid when signed by the owner.",
         width / 2f, height - 48f, paint(9f, color = grey, align = Paint.Align.CENTER)
     )
 

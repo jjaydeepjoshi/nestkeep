@@ -27,5 +27,20 @@ class ReceiptTest {
         assertEquals(500, r.due)
         assertEquals("NK-202609-ABC123", r.receiptNo)
         assertEquals("2026-09-05", r.payments.first().date)
+        assertEquals("PART PAID", r.status)
+    }
+
+    @Test
+    fun statusReflectsPaidPartAndUnpaid() {
+        val building = Building("b1", "Sunrise", "", listOf("101"), "Owner")
+        val tenant = Tenant("t1", "Asha", "", "b1", "101", 5000, "", "", "2026-01-01")
+        val unpaid = RentBill("x", "t1", "2026-09", 0, 5000)
+        assertEquals("UNPAID", buildReceipt(unpaid, tenant, building).status)
+        val part = unpaid.copy(payments = listOf(Payment("p", "2026-09-05", 2000)))
+        val r = buildReceipt(part, tenant, building)
+        assertEquals("PART PAID", r.status)
+        assertEquals(3000, r.due)
+        val over = unpaid.copy(payments = listOf(Payment("p", "2026-09-05", 6000)))
+        assertEquals(1000, buildReceipt(over, tenant, building).extra)
     }
 }

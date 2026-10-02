@@ -301,7 +301,7 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
             try {
                 val output = receiptContext.contentResolver.openOutputStream(uri) ?: error("Could not open the selected file")
                 output.use { writeReceiptPdf(receipt, it) }
-                Toast.makeText(receiptContext, "Receipt saved. Print it and sign above the owner line.", Toast.LENGTH_LONG).show()
+                Toast.makeText(receiptContext, "PDF saved. Print it and sign above the owner line.", Toast.LENGTH_LONG).show()
             } catch (error: Exception) {
                 Toast.makeText(receiptContext, "Could not save receipt: ${error.localizedMessage ?: "storage error"}", Toast.LENGTH_LONG).show()
             }
@@ -322,7 +322,6 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
         val building = data.buildings.firstOrNull { it.id == tenant?.buildingId }
         when {
             tenant == null || building == null -> Toast.makeText(receiptContext, "Tenant or building not found for this bill.", Toast.LENGTH_LONG).show()
-            bill.paid <= 0 -> Toast.makeText(receiptContext, "No payment is recorded for ${bill.month} yet. Record a payment first.", Toast.LENGTH_LONG).show()
             building.ownerName.isBlank() -> ownerPromptBill = bill
             else -> startReceipt(bill)
         }
@@ -947,7 +946,7 @@ private fun BillCard(bill: RentBill, tenant: Tenant?, onPay: (RentBill) -> Unit,
             if (tenant != null) {
                 androidx.compose.material3.OutlinedButton(onClick = { onReceipt(bill) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                     Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Text("Rent receipt (PDF)", modifier = Modifier.padding(start = 7.dp))
+                    Text(if (bill.paid > 0) "Rent receipt (PDF)" else "Rent bill (PDF)", modifier = Modifier.padding(start = 7.dp))
                 }
             }
         }
