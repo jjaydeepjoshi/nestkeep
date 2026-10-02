@@ -11,7 +11,9 @@ data class Building(
     val id: String,
     val name: String,
     val address: String,
-    val flats: List<String>
+    val flats: List<String>,
+    /** Landlord's name, printed under the signature line on rent receipts. */
+    val ownerName: String = ""
 )
 
 data class Tenant(

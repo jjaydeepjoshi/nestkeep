@@ -292,6 +292,41 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
     var registrationPhotos by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var movingOut by remember { mutableStateOf<Tenant?>(null) }
     var payingBill by remember { mutableStateOf<RentBill?>(null) }
+    var ownerPromptBill by remember { mutableStateOf<RentBill?>(null) }
+    var pendingReceipt by remember { mutableStateOf<ReceiptData?>(null) }
+    val receiptContext = LocalContext.current
+    val receiptLauncher = rememberLauncherForActivityResult(CreateDocument("application/pdf")) { uri ->
+        val receipt = pendingReceipt
+        if (uri != null && receipt != null) {
+            try {
+                val output = receiptContext.contentResolver.openOutputStream(uri) ?: error("Could not open the selected file")
+                output.use { writeReceiptPdf(receipt, it) }
+                Toast.makeText(receiptContext, "Receipt saved. Print it and sign above the owner line.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(receiptContext, "Could not save receipt: ${error.localizedMessage ?: "storage error"}", Toast.LENGTH_LONG).show()
+            }
+        }
+        pendingReceipt = null
+    }
+    fun startReceipt(bill: RentBill, ownerName: String? = null) {
+        val tenant = data.tenants.firstOrNull { it.id == bill.tenantId } ?: return
+        val stored = data.buildings.firstOrNull { it.id == tenant.buildingId } ?: return
+        val building = if (ownerName != null) stored.copy(ownerName = ownerName.trim()) else stored
+        val receipt = buildReceipt(bill, tenant, building)
+        pendingReceipt = receipt
+        val file = "Rent_Receipt_${tenant.name.filter { it.isLetterOrDigit() }.take(20).ifEmpty { "Tenant" }}_${bill.month}.pdf"
+        receiptLauncher.launch(file)
+    }
+    fun requestReceipt(bill: RentBill) {
+        val tenant = data.tenants.firstOrNull { it.id == bill.tenantId }
+        val building = data.buildings.firstOrNull { it.id == tenant?.buildingId }
+        when {
+            tenant == null || building == null -> Toast.makeText(receiptContext, "Tenant or building not found for this bill.", Toast.LENGTH_LONG).show()
+            bill.paid <= 0 -> Toast.makeText(receiptContext, "No payment is recorded for ${bill.month} yet. Record a payment first.", Toast.LENGTH_LONG).show()
+            building.ownerName.isBlank() -> ownerPromptBill = bill
+            else -> startReceipt(bill)
+        }
+    }
     var documentOwner by remember { mutableStateOf("tenant") }
     var cameraTarget by remember { mutableStateOf("tenant") }
     var pendingPhotoFile by remember { mutableStateOf<File?>(null) }
@@ -421,7 +456,7 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
                 )
                 Page.BUILDINGS -> BuildingsPage(data, onAdd = { showBuildingDialog = true }, onAddTenant = { showTenantDialog = true })
                 Page.TENANTS -> TenantsPage(data, onAdd = { showTenantDialog = true }, onMoveOut = { movingOut = it })
-                Page.BILLS -> BillsPage(data, onCreate = { showBillDialog = true }, onPay = { payingBill = it })
+                Page.BILLS -> BillsPage(data, onCreate = { showBillDialog = true }, onPay = { payingBill = it }, onReceipt = ::requestReceipt)
                 Page.REPORTS -> ReportsPage(data)
                 Page.HISTORY -> HistoryPage(data)
             }
@@ -431,9 +466,9 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
     if (showBuildingDialog) {
         AddBuildingDialog(
             onDismiss = { showBuildingDialog = false },
-            onAdd = { name, address, count ->
+            onAdd = { name, address, owner, count ->
                 val flats = (1..count).map { "${100 + it}" }
-                update(data.copy(buildings = data.buildings + Building(UUID.randomUUID().toString(), name, address, flats)))
+                update(data.copy(buildings = data.buildings + Building(UUID.randomUUID().toString(), name.trim(), address.trim(), flats, owner.trim())))
                 showBuildingDialog = false
             }
         )
@@ -587,6 +622,30 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
             dismissButton = { TextButton(onClick = { movingOut = null }) { Text("Cancel") } }
         )
     }
+    ownerPromptBill?.let { bill ->
+        val buildingId = data.tenants.firstOrNull { it.id == bill.tenantId }?.buildingId
+        var owner by remember(bill.id) { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { ownerPromptBill = null },
+            title = { Text("Owner name for receipts") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("This building has no owner name yet. It is printed under the signature line and saved for next time.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(owner, { owner = it }, label = { Text("Owner name") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = owner.isNotBlank(), onClick = {
+                    val name = owner.trim()
+                    update(data.copy(buildings = data.buildings.map { if (it.id == buildingId) it.copy(ownerName = name) else it }))
+                    ownerPromptBill = null
+                    startReceipt(bill, name)
+                }) { Text("Save and continue") }
+            },
+            dismissButton = { TextButton(onClick = { ownerPromptBill = null }) { Text("Cancel") } }
+        )
+    }
+
     payingBill?.let { bill ->
         PaymentDialog(
             bill = bill,
@@ -822,7 +881,7 @@ private fun TenantsPage(data: RentalData, onAdd: () -> Unit, onMoveOut: (Tenant)
 }
 
 @Composable
-private fun BillsPage(data: RentalData, onCreate: () -> Unit, onPay: (RentBill) -> Unit) {
+private fun BillsPage(data: RentalData, onCreate: () -> Unit, onPay: (RentBill) -> Unit, onReceipt: (RentBill) -> Unit) {
     val sortedBills = data.bills.sortedWith(compareByDescending<RentBill> { it.month }.thenByDescending { it.id })
     val monthBills = data.bills.filter { it.month == currentMonth() }
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -843,14 +902,14 @@ private fun BillsPage(data: RentalData, onCreate: () -> Unit, onPay: (RentBill) 
         } else {
             sortedBills.forEach { bill ->
                 val tenant = data.tenants.firstOrNull { it.id == bill.tenantId }
-                BillCard(bill, tenant, onPay)
+                BillCard(bill, tenant, onPay, onReceipt)
             }
         }
     }
 }
 
 @Composable
-private fun BillCard(bill: RentBill, tenant: Tenant?, onPay: (RentBill) -> Unit) {
+private fun BillCard(bill: RentBill, tenant: Tenant?, onPay: (RentBill) -> Unit, onReceipt: (RentBill) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(19.dp)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -883,6 +942,12 @@ private fun BillCard(bill: RentBill, tenant: Tenant?, onPay: (RentBill) -> Unit)
                 Button(onClick = { onPay(bill) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                     Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(17.dp))
                     Text(if (bill.due > 0) "Record payment" else "Add extra payment", modifier = Modifier.padding(start = 7.dp))
+                }
+            }
+            if (tenant != null) {
+                androidx.compose.material3.OutlinedButton(onClick = { onReceipt(bill) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+                    Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Text("Rent receipt (PDF)", modifier = Modifier.padding(start = 7.dp))
                 }
             }
         }
@@ -1688,8 +1753,9 @@ private fun HistoryPage(data: RentalData) {
 }
 
 @Composable
-private fun AddBuildingDialog(onDismiss: () -> Unit, onAdd: (String, String, Int) -> Unit) {
+private fun AddBuildingDialog(onDismiss: () -> Unit, onAdd: (String, String, String, Int) -> Unit) {
     var name by remember { mutableStateOf("") }
+    var owner by remember { mutableStateOf("") }
     var address by remember { mutableStateOf("") }
     var flatCount by remember { mutableStateOf("4") }
     val count = flatCount.toIntOrNull()
@@ -1699,13 +1765,14 @@ private fun AddBuildingDialog(onDismiss: () -> Unit, onAdd: (String, String, Int
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text("Building name") }, singleLine = true)
+                OutlinedTextField(owner, { owner = it }, label = { Text("Owner name (printed on rent receipts) *") }, singleLine = true)
                 OutlinedTextField(address, { address = it }, label = { Text("Address (optional)") }, singleLine = true)
                 OutlinedTextField(flatCount, { flatCount = it.filter(Char::isDigit).take(3) }, label = { Text("Number of flats") }, singleLine = true)
                 Text("Flats will be numbered 101 onwards. You can see occupancy by flat.", color = Muted, style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {
-            TextButton(onClick = { onAdd(name, address, count ?: 0) }, enabled = name.isNotBlank() && count != null && count in 1..500) { Text("Add building") }
+            TextButton(onClick = { onAdd(name, address, owner, count ?: 0) }, enabled = name.isNotBlank() && owner.isNotBlank() && count != null && count in 1..500) { Text("Add building") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
