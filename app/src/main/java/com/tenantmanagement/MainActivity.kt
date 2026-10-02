@@ -184,8 +184,15 @@ private fun SignInScreen(auth: AuthManager) {
                 scope.launch {
                     try {
                         auth.signIn()
-                        // Ask for Drive access as part of signing in so it never interrupts later.
-                        runCatching { auth.driveToken(false) }
+                        // Drive access is requested once, here, so it never interrupts an upload later. It is required:
+                        // photos and documents live in the user's own Google Drive.
+                        try {
+                            auth.driveToken(false)
+                        } catch (e: Exception) {
+                            auth.signOut()
+                            message = "NestKeep needs permission to store your photos and documents in your own Google Drive. Please sign in again and allow it."
+                            return@launch
+                        }
                     } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
                         message = "Sign-in was cancelled."
                     } catch (e: Exception) {
