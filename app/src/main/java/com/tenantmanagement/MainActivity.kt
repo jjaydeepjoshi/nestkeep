@@ -184,8 +184,15 @@ private fun SignInScreen(auth: AuthManager) {
                 scope.launch {
                     try {
                         auth.signIn()
-                        // Ask for Drive access as part of signing in so it never interrupts later.
-                        runCatching { auth.driveToken(false) }
+                        // Drive access is requested once, here, so it never interrupts an upload later. It is required:
+                        // photos and documents live in the user's own Google Drive.
+                        try {
+                            auth.driveToken(false)
+                        } catch (e: Exception) {
+                            auth.signOut()
+                            message = "NestKeep needs permission to store your photos and documents in your own Google Drive. Please sign in again and allow it."
+                            return@launch
+                        }
                     } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
                         message = "Sign-in was cancelled."
                     } catch (e: Exception) {
@@ -415,7 +422,7 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
                 Page.BUILDINGS -> BuildingsPage(data, onAdd = { showBuildingDialog = true }, onAddTenant = { showTenantDialog = true })
                 Page.TENANTS -> TenantsPage(data, onAdd = { showTenantDialog = true }, onMoveOut = { movingOut = it })
                 Page.BILLS -> BillsPage(data, onCreate = { showBillDialog = true }, onPay = { payingBill = it })
-                Page.REPORTS -> ReportsPage(data)
+                Page.REPORTS -> ReportsPage(data, ::update)
                 Page.HISTORY -> HistoryPage(data)
             }
         }
@@ -424,9 +431,9 @@ private fun RentalApp(repo: CloudRepository, data: RentalData, email: String, sy
     if (showBuildingDialog) {
         AddBuildingDialog(
             onDismiss = { showBuildingDialog = false },
-            onAdd = { name, address, count ->
+            onAdd = { name, address, owner, count ->
                 val flats = (1..count).map { "${100 + it}" }
-                update(data.copy(buildings = data.buildings + Building(UUID.randomUUID().toString(), name, address, flats)))
+                update(data.copy(buildings = data.buildings + Building(UUID.randomUUID().toString(), name.trim(), address.trim(), flats, owner.trim())))
                 showBuildingDialog = false
             }
         )
@@ -883,7 +890,122 @@ private fun BillCard(bill: RentBill, tenant: Tenant?, onPay: (RentBill) -> Unit)
 }
 
 @Composable
-private fun ReportsPage(data: RentalData) {
+private fun RentReceiptCard(data: RentalData, onUpdate: (RentalData) -> Unit) {
+    val context = LocalContext.current
+    var tenantId by remember { mutableStateOf<String?>(null) }
+    var billId by remember { mutableStateOf<String?>(null) }
+    var tenantMenu by remember { mutableStateOf(false) }
+    var monthMenu by remember { mutableStateOf(false) }
+    var ownerPrompt by remember { mutableStateOf(false) }
+    var ownerInput by remember { mutableStateOf("") }
+    var pending by remember { mutableStateOf<ReceiptData?>(null) }
+    val launcher = rememberLauncherForActivityResult(CreateDocument("application/pdf")) { uri ->
+        val receipt = pending
+        if (uri != null && receipt != null) {
+            try {
+                val output = context.contentResolver.openOutputStream(uri) ?: error("Could not open the selected file")
+                output.use { writeReceiptPdf(receipt, it) }
+                Toast.makeText(context, "PDF saved. Print it and sign above the owner line.", Toast.LENGTH_LONG).show()
+            } catch (error: Exception) {
+                Toast.makeText(context, "Could not save PDF: ${error.localizedMessage ?: "storage error"}", Toast.LENGTH_LONG).show()
+            }
+        }
+        pending = null
+    }
+    val tenant = data.tenants.firstOrNull { it.id == tenantId }
+    val bills = data.bills.filter { it.tenantId == tenantId }.sortedByDescending { it.month }
+    val bill = bills.firstOrNull { it.id == billId }
+    val building = data.buildings.firstOrNull { it.id == tenant?.buildingId }
+
+    fun start(ownerName: String? = null) {
+        val t = tenant ?: return
+        val b = bill ?: return
+        val stored = building ?: return
+        val receipt = buildReceipt(b, t, if (ownerName != null) stored.copy(ownerName = ownerName) else stored)
+        pending = receipt
+        launcher.launch("Rent_Receipt_${t.name.filter { it.isLetterOrDigit() }.take(20).ifEmpty { "Tenant" }}_${b.month}.pdf")
+    }
+
+    Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = null, tint = Green, modifier = Modifier.size(22.dp))
+                Column(Modifier.padding(start = 10.dp)) {
+                    Text("Rent receipt", color = Ink, fontWeight = FontWeight.Bold)
+                    Text("Printable PDF for any tenant and month, with paid, unpaid and remaining amounts and a signature line for the owner.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (data.tenants.isEmpty()) {
+                Text("Add a tenant and generate a bill to create receipts.", color = Muted, style = MaterialTheme.typography.bodySmall)
+            } else {
+                Box {
+                    OutlinedButton(onClick = { tenantMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            tenant?.let { t -> "${t.name} · ${data.buildings.firstOrNull { it.id == t.buildingId }?.name.orEmpty()} ${t.flat.trim()}" } ?: "Select tenant",
+                            modifier = Modifier.weight(1f), maxLines = 1
+                        )
+                    }
+                    DropdownMenu(expanded = tenantMenu, onDismissRequest = { tenantMenu = false }) {
+                        data.tenants.sortedBy { it.name.lowercase() }.forEach { t ->
+                            DropdownMenuItem(
+                                text = { Text("${t.name} · ${data.buildings.firstOrNull { it.id == t.buildingId }?.name.orEmpty()} ${t.flat.trim()}${if (t.active) "" else " (former)"}") },
+                                onClick = { tenantId = t.id; billId = null; tenantMenu = false }
+                            )
+                        }
+                    }
+                }
+                Box {
+                    OutlinedButton(onClick = { monthMenu = true }, enabled = tenant != null, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            bill?.let { "${it.month} · paid ${money(it.paid)} of ${money(it.total)}" }
+                                ?: if (tenant != null && bills.isEmpty()) "No bills for this tenant yet" else "Select month",
+                            modifier = Modifier.weight(1f), maxLines = 1
+                        )
+                    }
+                    DropdownMenu(expanded = monthMenu, onDismissRequest = { monthMenu = false }) {
+                        bills.forEach { b ->
+                            DropdownMenuItem(
+                                text = { Text("${b.month} · paid ${money(b.paid)} of ${money(b.total)}") },
+                                onClick = { billId = b.id; monthMenu = false }
+                            )
+                        }
+                    }
+                }
+                Button(
+                    onClick = { if (building?.ownerName.isNullOrBlank()) { ownerInput = ""; ownerPrompt = true } else start() },
+                    enabled = bill != null && building != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) { Text(if (bill != null && bill.paid <= 0) "Download bill PDF" else "Download receipt PDF", fontWeight = FontWeight.SemiBold) }
+            }
+        }
+    }
+
+    if (ownerPrompt) {
+        AlertDialog(
+            onDismissRequest = { ownerPrompt = false },
+            title = { Text("Owner name for receipts") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("This building has no owner name yet. It is printed under the signature line and saved for next time.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(ownerInput, { ownerInput = it }, label = { Text("Owner name") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = ownerInput.isNotBlank(), onClick = {
+                    val name = ownerInput.trim()
+                    onUpdate(data.copy(buildings = data.buildings.map { if (it.id == building?.id) it.copy(ownerName = name) else it }))
+                    ownerPrompt = false
+                    start(name)
+                }) { Text("Save and continue") }
+            },
+            dismissButton = { TextButton(onClick = { ownerPrompt = false }) { Text("Cancel") } }
+        )
+    }
+}
+
+@Composable
+private fun ReportsPage(data: RentalData, onUpdate: (RentalData) -> Unit) {
     var yearly by remember { mutableStateOf(false) }
     var selectedMonth by remember { mutableStateOf(YearMonth.now()) }
     var selectedYear by remember { mutableStateOf(java.time.Year.now().value) }
@@ -935,6 +1057,7 @@ private fun ReportsPage(data: RentalData) {
             periodError = null
         }
         PageIntro("Rental reports", "Income and occupancy by building and flat")
+        RentReceiptCard(data, onUpdate)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(selected = !yearly, onClick = { yearly = false }, label = { Text("Monthly") })
             FilterChip(selected = yearly, onClick = { yearly = true }, label = { Text("Yearly") })
@@ -1681,8 +1804,9 @@ private fun HistoryPage(data: RentalData) {
 }
 
 @Composable
-private fun AddBuildingDialog(onDismiss: () -> Unit, onAdd: (String, String, Int) -> Unit) {
+private fun AddBuildingDialog(onDismiss: () -> Unit, onAdd: (String, String, String, Int) -> Unit) {
     var name by remember { mutableStateOf("") }
+    var owner by remember { mutableStateOf("") }
     var address by remember { mutableStateOf("") }
     var flatCount by remember { mutableStateOf("4") }
     val count = flatCount.toIntOrNull()
@@ -1692,13 +1816,14 @@ private fun AddBuildingDialog(onDismiss: () -> Unit, onAdd: (String, String, Int
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text("Building name") }, singleLine = true)
+                OutlinedTextField(owner, { owner = it }, label = { Text("Owner name (printed on rent receipts) *") }, singleLine = true)
                 OutlinedTextField(address, { address = it }, label = { Text("Address (optional)") }, singleLine = true)
                 OutlinedTextField(flatCount, { flatCount = it.filter(Char::isDigit).take(3) }, label = { Text("Number of flats") }, singleLine = true)
                 Text("Flats will be numbered 101 onwards. You can see occupancy by flat.", color = Muted, style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {
-            TextButton(onClick = { onAdd(name, address, count ?: 0) }, enabled = name.isNotBlank() && count != null && count in 1..500) { Text("Add building") }
+            TextButton(onClick = { onAdd(name, address, owner, count ?: 0) }, enabled = name.isNotBlank() && owner.isNotBlank() && count != null && count in 1..500) { Text("Add building") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )

@@ -119,7 +119,7 @@ class CloudRepository(private val uid: String, private val db: FirebaseFirestore
         private fun readDocs(value: Any?): List<DocumentFile> =
             (value as? List<Map<String, Any?>>).orEmpty().map { DocumentFile(it["uri"] as String, it["name"] as String) }
 
-        internal fun buildingMap(b: Building) = mapOf("name" to b.name, "address" to b.address, "flats" to b.flats)
+        internal fun buildingMap(b: Building) = mapOf("name" to b.name, "address" to b.address, "flats" to b.flats, "ownerName" to b.ownerName)
 
         internal fun tenantMap(t: Tenant) = mapOf(
             "name" to t.name, "phone" to t.phone, "buildingId" to t.buildingId, "flat" to t.flat, "rent" to t.rent,
@@ -138,7 +138,8 @@ class CloudRepository(private val uid: String, private val db: FirebaseFirestore
 
         private fun readBuilding(d: DocumentSnapshot) = Building(
             d.id, d.getString("name") ?: "", d.getString("address") ?: "",
-            (d.get("flats") as? List<*>).orEmpty().map { it.toString() }
+            (d.get("flats") as? List<*>).orEmpty().map { it.toString() },
+            d.getString("ownerName") ?: ""
         )
 
         @Suppress("UNCHECKED_CAST")
