@@ -33,7 +33,7 @@ data class Tenant(
     val maskedAadhaar: String = ""
 )
 
-/** [uri] is "cloud:<fileId>" once uploaded to the owner's cloud space, or a local content URI before that. */
+/** [uri] is "drive:<fileId>" once uploaded to the owner's Google Drive, or a local content URI before that. */
 data class DocumentFile(val uri: String, val name: String)
 
 data class FamilyMember(
